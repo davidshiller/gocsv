@@ -175,6 +175,18 @@ func UnmarshalToChan(in io.Reader, c interface{}) error {
 	return readEach(newDecoder(in), c)
 }
 
+func UnmarshalToChanWithErr(in io.Reader, c interface{}, err chan LineError) error {
+	if c == nil {
+		return fmt.Errorf("goscv: channel is %v", c)
+	}
+
+	if err == nil {
+		return fmt.Errorf("goscv: error channel is %v", err)
+	}
+
+	return readEachWithErrChan(newDecoder(in), c, err)
+}
+
 // UnmarshalDecoderToChan parses the CSV from the decoder and send each value in the chan c.
 // The channel must have a concrete type.
 func UnmarshalDecoderToChan(in SimpleDecoder, c interface{}) error {

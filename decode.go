@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 )
 
 // Decoder .
@@ -160,6 +161,96 @@ func readTo(decoder Decoder, out interface{}) error {
 		outValue.Index(i).Set(outInner)
 	}
 	return nil
+}
+
+func readEachWithErrChan(decoder SimpleDecoder, c interface{}, errs chan LineError ) error{
+	headers, err := decoder.getCSVRow()
+	if err != nil {
+		return err
+	}
+	outValue, outType := getConcreteReflectValueAndType(c) // Get the concrete type (not pointer) (Slice<?> or Array<?>)
+	if err := ensureOutType(outType); err != nil {
+		return err
+	}
+	defer outValue.Close()
+
+	outInnerWasPointer, outInnerType := getConcreteContainerInnerType(outType) // Get the concrete inner type (not pointer) (Container<"?">)
+	if err := ensureOutInnerType(outInnerType); err != nil {
+		return err
+	}
+	outInnerStructInfo := getStructInfo(outInnerType) // Get the inner struct info to get CSV annotations
+	if len(outInnerStructInfo.Fields) == 0 {
+		return errors.New("no csv struct tags found")
+	}
+	csvHeadersLabels := make(map[int]*fieldInfo, len(outInnerStructInfo.Fields)) // Used to store the correspondance header <-> position in CSV
+	headerCount := map[string]int{}
+	for i, csvColumnHeader := range headers {
+		curHeaderCount := headerCount[csvColumnHeader]
+		if fieldInfo := getCSVFieldPosition(csvColumnHeader, outInnerStructInfo, curHeaderCount); fieldInfo != nil {
+			csvHeadersLabels[i] = fieldInfo
+			if ShouldAlignDuplicateHeadersWithStructFieldOrder {
+				curHeaderCount++
+				headerCount[csvColumnHeader] = curHeaderCount
+			}
+		}
+	}
+	if err := maybeMissingStructFields(outInnerStructInfo.Fields, headers); err != nil {
+		if FailIfUnmatchedStructTags {
+			return err
+		}
+	}
+	if FailIfDoubleHeaderNames {
+		if err := maybeDoubleHeaderNames(headers); err != nil {
+			return err
+		}
+	}
+	i := 0
+	hasError := false
+	for {
+		hasError = false
+		line, err := decoder.getCSVRow()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			errs <- LineError{LineNumber: i + 2,
+			                  Line: formatErrorLine(line),
+			                  Err: err}
+
+			continue //attempt to parse next line
+		}
+
+		outInner := createNewOutInner(outInnerWasPointer, outInnerType)
+		for j, csvColumnContent := range line {
+			if fieldInfo, ok := csvHeadersLabels[j]; ok { // Position found accordingly to header name
+				if err := setInnerField(&outInner, outInnerWasPointer, fieldInfo.IndexChain, csvColumnContent); err != nil { // Set field of struct
+					errs <- LineError{LineNumber: i + 2,
+						              Line: formatErrorLine(line) ,
+									  Err: errors.New(fmt.Sprintf("%s%d%s%d%s", "line: ", i+2 , " column: ", j+1, " error: " + err.Error()))}
+					hasError = true
+					break
+				}
+
+			}
+		}
+		if !hasError {
+			outValue.Send(outInner)
+		}
+		i++
+	}
+	return nil
+}
+
+func formatErrorLine(line []string) string {
+	var s string
+
+	for i, j := range line {
+		if strings.Contains(j,","){
+			line[i] = "\"" + j + "\""
+		}
+		s = strings.Join(line,",")
+	}
+
+	return s
 }
 
 func readEach(decoder SimpleDecoder, c interface{}) error {

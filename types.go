@@ -44,6 +44,12 @@ type NoMarshalFuncError struct {
 	msg string
 }
 
+type LineError struct {
+	LineNumber int
+	Line       string
+	Err        error
+}
+
 func (e NoMarshalFuncError) Error() string {
 	return e.msg
 }
